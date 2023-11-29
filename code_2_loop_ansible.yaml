@@ -1,0 +1,35 @@
+- name: Get worker nodes
+  command: "oc get nodes --no-headers --selector=node-role.kubernetes.io/worker -o custom-columns=:metadata.name"
+  register: worker_nodes
+
+- name: Define worker node IPs
+  set_fact:
+    worker_ips:
+      node1: 172.16.20.100
+      node2: 172.16.20.101
+      node3: 172.16.20.102  # Add more nodes as needed
+
+- name: Add second NIC (ens224) to worker nodes
+  k8s:
+    state: present
+    definition:
+      apiVersion: nmstate.io/v1
+      kind: NodeNetworkConfigurationPolicy
+      metadata:
+        name: ens224-policy-{{ item.key }}
+      spec:
+        nodeSelector:
+          kubernetes.io/hostname: "{{ item.key }}"
+        desiredState:
+          interfaces:
+            - name: ens224
+              description: "Configuring ens224 on {{ item.key }}"
+              type: ethernet
+              state: up
+              ipv4:
+                address:
+                  - ip: "{{ item.value }}"
+                    prefix-length: 24
+                enabled: true
+                dhcp: false
+  loop: "{{ worker_ips|dict2items }}"
