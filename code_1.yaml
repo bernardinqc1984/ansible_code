@@ -1,0 +1,144 @@
+---
+- name: Get current number of nodes
+  shell: |
+    oc get nodes --no-headers | wc -l
+  register: initial_node_count
+
+- name: Get csr to sign list
+  shell: "oc get csr -ojson | jq -r '.items[] | select(.status == {} ) | .metadata.name'"
+  register: certs_to_sign
+  ignore_errors: true
+  
+- name: Store CSR names in a variable
+  set_fact:
+    csr_names: "{{ certs_to_sign.stdout_lines }}"
+  
+- name: Approve CSRs
+  shell: "oc adm certificate approve {{ item }}"
+  with_items: "{{ csr_names }}"
+  when: certs_to_sign.changed and csr_names|length > 0
+
+
+- name: Check for any NotReady nodes
+  shell: |
+    oc get nodes --no-headers | grep -v master | grep NotReady
+  register: worker_unready_count
+  failed_when:
+    - worker_unready_count.rc == 0
+  until: worker_unready_count.rc == 1
+  retries: 18
+  delay: 10
+  
+- name: Show unready nodes
+  debug:
+    var: worker_unready_count.stdout_lines
+  when: worker_unready_count.stdout_lines|length > 0
+  
+- name: Get master nodes
+  k8s_info:
+    kind: Node
+    label_selectors:
+      - node-role.kubernetes.io/master
+  register: master_nodes
+  
+- name: Get infra nodes
+  k8s_info:
+    kind: Node
+    label_selectors:
+      - node-role.kubernetes.io/infra
+  register: infra_nodes
+  
+- name: Get worker nodes
+  k8s_info:
+    kind: Node
+    label_selectors:
+      - node-role.kubernetes.io/worker
+  register: worker_nodes
+
+- name: Label master nodes
+  k8s:
+    state: labeled
+    label:
+      cirrus/role: master
+    resource_definition:
+      kind: Node
+      name: "{{ item }}"
+    force: true
+  with_items: "{{ master_nodes.resources | map(attribute='metadata.name') }}"
+
+- name: Label infra nodes
+  k8s:
+    state: labeled
+    label:
+      node-role.kubernetes.io/infra: ''
+    resource_definition:
+      kind: Node
+      name: "{{ item }}"
+    force: true
+  with_items: "{{ infra_nodes.resources | map(attribute='metadata.name') }}"
+  
+- name: Label infra nodes
+  shell: |
+   oc adm taint nodes -l node-role.kubernetes.io/infra node-role.kubernetes.io/infra=reserved:NoSchedule node-role.kubernetes.io/infra=reserved:NoExecute --overwrite
+  with_items: "{{infra_nodes.stdout_lines}}"
+  
+- name: Patch Ingress Operator
+  k8s:
+    state: present
+    definition:
+      apiVersion: operator.openshift.io/v1
+      kind: IngressController
+      metadata:
+        name: default
+        namespace: openshift-ingress-operator
+      spec:
+        nodePlacement:
+          nodeSelector:
+            matchLabels:
+              node-role.kubernetes.io/infra: ""
+          tolerations:
+            - effect: NoSchedule
+              key: node-role.kubernetes.io/infra
+              value: reserved
+            - effect: NoExecute
+              key: node-role.kubernetes.io/infra
+              value: reserved
+  register: patch_ingres
+
+- name: Scale routers
+  k8s:
+    state: present
+    definition:
+      apiVersion: operator.openshift.io/v1
+      kind: IngressController
+      metadata:
+        name: default
+        namespace: openshift-ingress-operator
+      spec:
+        replicas: 3
+  register: scale
+  until: scale is search('patched')
+
+- name: Restart router pods
+  k8s:
+    state: restarted
+    definition:
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: router-default
+        namespace: openshift-ingress
+  register: result
+  until: result is successful
+
+- name: Label worker nodes
+  k8s:
+    state: labeled
+    label:
+      node-role.kubernetes.io/app: ''
+      cirrus/role: worker
+    resource_definition:
+      kind: Node
+      name: "{{ item }}"
+    force: true
+  with_items: "{{ worker_nodes.stdout_lines }}"
