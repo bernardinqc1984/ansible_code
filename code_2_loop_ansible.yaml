@@ -33,3 +33,8 @@
                 enabled: true
                 dhcp: false
   loop: "{{ worker_ips|dict2items }}"
+
+
+#`worker_nodes` is used to get the list of worker nodes.
+#`worker_ips` is a dictionary that maps each worker node to its corresponding IP address.
+# The `k8s` task loops through each worker node and applies the configuration with the specified IP address.
