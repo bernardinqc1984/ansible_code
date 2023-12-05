@@ -59,6 +59,35 @@ spec:
       name: nginx-config
 ````
 
+````shell
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nginx-deployment
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: nginx
+  template:
+    metadata:
+      labels:
+        app: nginx
+    spec:
+      containers:
+      - name: nginx
+        image: quay.io/jitesoft/nginx
+        ports:
+        - containerPort: 80
+        volumeMounts:
+        - name: nginx-volume
+          mountPath: /usr/local/nginx/html
+      volumes:
+      - name: nginx-volume
+        persistentVolumeClaim:
+           claimName: pvc-test-nfs
+````
+
 Apply the Deployment:
 
 ````shell
